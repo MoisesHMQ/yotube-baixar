@@ -9,7 +9,13 @@ from yt_dlp import YoutubeDL # type: ignore
 
 BASE_DIR = os.path.dirname(__file__)
 OUTPUT_DIR = os.path.join(BASE_DIR, "videos")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Verificar se a pasta videos já existe
+if os.path.exists(OUTPUT_DIR):
+    if not os.path.isdir(OUTPUT_DIR):
+        raise RuntimeError(f"'{OUTPUT_DIR}' existe mas não é uma pasta.")
+else:
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 urls = []
 messages = []
