@@ -15,7 +15,7 @@ if os.path.exists(OUTPUT_DIR):
     if not os.path.isdir(OUTPUT_DIR):
         raise RuntimeError(f"'{OUTPUT_DIR}' existe mas não é uma pasta.")
 else:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_DIR)
 
 urls = []
 messages = []
