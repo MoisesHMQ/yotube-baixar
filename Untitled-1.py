@@ -1,64 +1,103 @@
-﻿import json
+import json
 import os
 import shutil
+import subprocess
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from yt_dlp import YoutubeDL # type: ignore
 
-BASE_DIR = os.path.dirname(__file__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "videos")
 
-# Verificar se a pasta videos já existe
 if os.path.exists(OUTPUT_DIR):
     if not os.path.isdir(OUTPUT_DIR):
         raise RuntimeError(f"'{OUTPUT_DIR}' existe mas não é uma pasta.")
 else:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-urls = []
-messages = []
-queue_lock = threading.Lock()
-download_thread = None
+HAS_FFMPEG = shutil.which("ffmpeg") is not None
+
+urls: list[dict] = []
+messages: list[str] = []
+state_lock = threading.Lock()
+download_thread: threading.Thread | None = None
+
+ALLOWED_FORMATS = {"mp3", "mp4", "mkv", "avi", "mov", "wmv"}
+MAX_MESSAGES = 500
 
 
-def get_ydl_options() -> dict:
-    has_ffmpeg = shutil.which("ffmpeg") is not None
-    if has_ffmpeg:
+def log(msg: str) -> None:
+    with state_lock:
+        messages.append(msg)
+        if len(messages) > MAX_MESSAGES:
+            del messages[:100]
+
+
+def get_ydl_options(fmt: str) -> dict:
+    base = {
+        "noplaylist": True,
+        "outtmpl": os.path.join(OUTPUT_DIR, "%(title)s.%(ext)s"),
+    }
+
+    if not HAS_FFMPEG:
+        if fmt != "mp4":
+            raise RuntimeError(
+                f"ffmpeg não encontrado. O formato {fmt.upper()} requer ffmpeg para conversão. "
+                "Instale o ffmpeg ou escolha MP4."
+            )
+        # MP4 sem ffmpeg: baixa o melhor stream com áudio integrado
+        return {**base, "format": "best[height<=1080]"}
+
+    if fmt == "mp3":
         return {
-            "noplaylist": True,
-            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-            "merge_output_format": "mp4",
-            "outtmpl": os.path.join(OUTPUT_DIR, "%(title)s.%(ext)s"),
+            **base,
+            "format": "bestaudio/best",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
         }
 
-    if not any(msg.startswith("Aviso: ffmpeg") for msg in messages):
-        messages.append("Aviso: ffmpeg não encontrado. Será usado um único arquivo com áudio integrado.")
+    if fmt == "wmv":
+        return {
+            **base,
+            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+            "postprocessors": [{
+                "key": "FFmpegVideoConvertor",
+                "preferedformat": "wmv",
+            }],
+        }
+
+    # MP4, MKV, AVI, MOV — merge direto no container
     return {
-        "noplaylist": True,
-        "format": "best[height<=1080]",
-        "outtmpl": os.path.join(OUTPUT_DIR, "%(title)s.%(ext)s"),
+        **base,
+        "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+        "merge_output_format": fmt,
     }
 
 
 def download_worker() -> None:
     global download_thread
     while True:
-        with queue_lock:
+        with state_lock:
             if not urls:
                 download_thread = None
                 return
-            url = urls.pop(0)
+            item = urls.pop(0)
 
-        messages.append(f"Iniciando download: {url}")
+        url = item["url"]
+        fmt = item["fmt"]
+        log(f"Iniciando download [{fmt.upper()}]: {url}")
         try:
-            with YoutubeDL(get_ydl_options()) as ydl:
+            with YoutubeDL(get_ydl_options(fmt)) as ydl:
                 ydl.download([url])
         except Exception as exc:
-            messages.append(f"Erro ao baixar {url}: {exc}")
+            log(f"Erro ao baixar {url}: {exc}")
         else:
-            messages.append(f"Download concluído: {url}")
+            log(f"Download concluído [{fmt.upper()}]: {url}")
 
 
 def start_download_thread() -> None:
@@ -80,16 +119,25 @@ def open_output_folder() -> None:
     if os.name == "nt":
         os.startfile(OUTPUT_DIR)
     elif os.name == "posix":
-        os.system(f"xdg-open '{OUTPUT_DIR}'")
+        subprocess.Popen(["xdg-open", OUTPUT_DIR])
     else:
         raise RuntimeError("Não é possível abrir a pasta automaticamente neste sistema.")
 
 
 def build_html() -> str:
-    with queue_lock:
-        queue_items = "".join(f"<li>{escape_html(url)}</li>" for url in urls)
-    message_items = "".join(f"<li>{escape_html(msg)}</li>" for msg in messages[-20:])
-    running = download_thread is not None
+    with state_lock:
+        queue_items = "".join(
+            f"<li><span class='fmt-badge'>{escape_html(item['fmt'].upper())}</span> {escape_html(item['url'])}</li>"
+            for item in urls
+        )
+        recent_messages = list(messages[-20:])
+        running = download_thread is not None
+        msg_count = len(messages)
+
+    message_items = "".join(f"<li>{escape_html(msg)}</li>" for msg in recent_messages)
+    ffmpeg_warning = "" if HAS_FFMPEG else (
+        "<div class='warn'>Aviso: ffmpeg não encontrado. Apenas MP4 está disponível.</div>"
+    )
     return f"""
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -101,14 +149,22 @@ def build_html() -> str:
         body {{ font-family: Arial, sans-serif; margin: 24px; max-width: 960px; background: #f3f6fb; color: #1a1a1a; }}
         header {{ margin-bottom: 24px; }}
         .card {{ background: white; border-radius: 16px; padding: 22px; box-shadow: 0 18px 40px rgba(0,0,0,.08); margin-bottom: 20px; }}
-        input[type=text] {{ width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid #d5dce9; margin-top: 8px; box-sizing: border-box; }}
-        input[type=submit] {{ margin-top: 12px; padding: 12px 20px; border-radius: 10px; border: none; background: #2563eb; color: white; font-weight: 600; cursor: pointer; }}
-        input[type=submit]:hover {{ background: #1d4ed8; }}
+        .form-row {{ display: flex; gap: 10px; align-items: flex-end; margin-top: 8px; }}
+        .form-row input[type=text] {{ flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid #d5dce9; box-sizing: border-box; }}
+        .form-row select {{ padding: 12px 14px; border-radius: 10px; border: 1px solid #d5dce9; background: white; font-size: 1rem; cursor: pointer; min-width: 100px; }}
+        .form-row input[type=submit] {{ padding: 12px 20px; border-radius: 10px; border: none; background: #2563eb; color: white; font-weight: 600; cursor: pointer; white-space: nowrap; }}
+        .form-row input[type=submit]:hover {{ background: #1d4ed8; }}
+        label {{ font-weight: 600; display: block; margin-bottom: 4px; }}
+        .label-row {{ display: flex; gap: 10px; }}
+        .label-row label {{ flex: 1; }}
+        .label-row .label-fmt {{ min-width: 100px; }}
         h1 {{ margin-bottom: 8px; }}
         h2 {{ margin-top: 0; }}
         ol {{ padding-left: 20px; margin: 10px 0; }}
         .small {{ color: #6b7280; font-size: 0.95rem; }}
+        .warn {{ background: #fef9c3; border: 1px solid #fde047; border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; color: #854d0e; font-size: 0.95rem; }}
         .status-chip {{ display: inline-block; padding: 6px 12px; border-radius: 999px; background: #e0f2fe; color: #0369a1; font-weight: 600; margin-bottom: 14px; }}
+        .fmt-badge {{ display: inline-block; padding: 2px 8px; border-radius: 6px; background: #dbeafe; color: #1d4ed8; font-size: 0.78rem; font-weight: 700; margin-right: 6px; vertical-align: middle; }}
         #toast-container {{ position: fixed; right: 20px; top: 20px; width: 320px; z-index: 1000; }}
         .toast {{ background: #0d9488; color: #fff; padding: 14px 16px; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,.15); margin-top: 12px; opacity: 0; transform: translateX(20px); transition: opacity .3s ease, transform .3s ease; }}
         .toast.show {{ opacity: 1; transform: translateX(0); }}
@@ -118,13 +174,27 @@ def build_html() -> str:
 <body>
     <header>
         <h1>Downloader YouTube</h1>
-        <p class="small">Cole uma URL e ela será adicionada à fila. O download começa automaticamente.</p>
+        <p class="small">Cole uma URL, escolha o formato e ela será adicionada à fila. O download começa automaticamente.</p>
     </header>
     <div class="card">
+        {ffmpeg_warning}
         <form method="post" action="/">
-            <label for="url">URL do YouTube</label>
-            <input type="text" id="url" name="url" placeholder="https://www.youtube.com/watch?v=..." required />
-            <input type="submit" value="Adicionar à fila" />
+            <div class="label-row">
+                <label for="url">URL do YouTube</label>
+                <label class="label-fmt" for="fmt">Formato</label>
+            </div>
+            <div class="form-row">
+                <input type="text" id="url" name="url" placeholder="https://www.youtube.com/watch?v=..." required />
+                <select id="fmt" name="fmt">
+                    <option value="mp3">MP3</option>
+                    <option value="mp4" selected>MP4</option>
+                    <option value="mkv">MKV</option>
+                    <option value="avi">AVI</option>
+                    <option value="mov">MOV</option>
+                    <option value="wmv">WMV</option>
+                </select>
+                <input type="submit" value="Adicionar à fila" />
+            </div>
         </form>
     </div>
     <div class="card">
@@ -141,7 +211,7 @@ def build_html() -> str:
     </div>
     <div id="toast-container"></div>
     <script>
-        let lastMessageCount = {len(messages)};
+        let lastMessageCount = {msg_count};
 
         function escapeHtml(text) {{
             const div = document.createElement('div');
@@ -164,19 +234,18 @@ def build_html() -> str:
             const queueList = document.getElementById('queue-list');
             const messageList = document.getElementById('message-list');
             const statusChip = document.querySelector('.status-chip');
-            queueList.innerHTML = data.urls.map(url => `<li>${{escapeHtml(url)}}</li>`).join('');
+            queueList.innerHTML = data.urls.map(item =>
+                `<li><span class="fmt-badge">${{escapeHtml(item.fmt.toUpperCase())}}</span> ${{escapeHtml(item.url)}}</li>`
+            ).join('');
             messageList.innerHTML = data.messages.map(msg => `<li>${{escapeHtml(msg)}}</li>`).join('');
             statusChip.textContent = data.running ? 'Em execução' : 'Aguardando novos URLs';
-            if (data.messages.length > lastMessageCount) {{
-                for (let i = lastMessageCount; i < data.messages.length; i++) {{
-                    const msg = data.messages[i];
-                    if (msg.startsWith('Download concluído')) {{
-                        createToast(msg);
-                    }} else if (msg.startsWith('Erro')) {{
-                        createToast(msg, true);
-                    }}
+            if (data.total_messages > lastMessageCount) {{
+                const newMsgs = data.messages.slice(data.messages.length - (data.total_messages - lastMessageCount));
+                for (const msg of newMsgs) {{
+                    if (msg.startsWith('Download concluído')) createToast(msg);
+                    else if (msg.startsWith('Erro')) createToast(msg, true);
                 }}
-                lastMessageCount = data.messages.length;
+                lastMessageCount = data.total_messages;
             }}
         }}
 
@@ -202,10 +271,11 @@ def build_html() -> str:
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/status":
-            with queue_lock:
+            with state_lock:
                 data = {
-                    "urls": list(urls),
+                    "urls": [{"url": item["url"], "fmt": item["fmt"]} for item in urls],
                     "messages": messages[-20:],
+                    "total_messages": len(messages),
                     "running": download_thread is not None,
                 }
             payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -238,16 +308,23 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def do_POST(self) -> None:
-        content_length = int(self.headers.get("Content-Length", 0))
+        content_length = max(0, int(self.headers.get("Content-Length", 0)))
         body = self.rfile.read(content_length).decode("utf-8")
         data = urllib.parse.parse_qs(body)
         url = data.get("url", [""])[0].strip()
+        fmt = data.get("fmt", ["mp4"])[0].strip().lower()
+
+        if fmt not in ALLOWED_FORMATS:
+            fmt = "mp4"
 
         if url:
-            with queue_lock:
-                urls.append(url)
-            messages.append(f"URL adicionada à fila: {url}")
-            start_download_thread()
+            if not url.startswith(("http://", "https://")):
+                log(f"URL rejeitada (deve começar com http:// ou https://): {url}")
+            else:
+                with state_lock:
+                    urls.append({"url": url, "fmt": fmt})
+                    start_download_thread()
+                log(f"URL adicionada à fila [{fmt.upper()}]: {url}")
 
         self.send_response(303)
         self.send_header("Location", "/")
