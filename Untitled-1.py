@@ -1,7 +1,8 @@
+import atexit
 import json
 import os
 import shutil
-import subprocess
+import tempfile
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -9,18 +10,19 @@ from socketserver import ThreadingMixIn
 from yt_dlp import YoutubeDL # type: ignore
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "videos")
-
-if os.path.exists(OUTPUT_DIR):
-    if not os.path.isdir(OUTPUT_DIR):
-        raise RuntimeError(f"'{OUTPUT_DIR}' existe mas não é uma pasta.")
-else:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
+# Diretório temporário por instância do servidor — apagado automaticamente ao encerrar
+TEMP_DIR = tempfile.mkdtemp(prefix="ytdl_")
+TEMP_DIR_ABS = os.path.abspath(TEMP_DIR)
+atexit.register(lambda: shutil.rmtree(TEMP_DIR, ignore_errors=True))
+
 urls: list[dict] = []
 messages: list[str] = []
+completed: list[dict] = []  # {"filename": str, "fmt": str, "seq": int}
+completed_seq: int = 0
+
 state_lock = threading.Lock()
 download_thread: threading.Thread | None = None
 
@@ -35,10 +37,38 @@ def log(msg: str) -> None:
             del messages[:100]
 
 
-def get_ydl_options(fmt: str) -> dict:
+def add_completed(filename: str, fmt: str) -> None:
+    global completed_seq
+    with state_lock:
+        completed_seq += 1
+        completed.append({"filename": filename, "fmt": fmt, "seq": completed_seq})
+        if len(completed) > 100:
+            del completed[:50]
+
+
+class DownloadTracker:
+    """Captura o caminho final do arquivo após yt-dlp (inclusive pós-processadores)."""
+
+    def __init__(self) -> None:
+        self.final_path: str | None = None
+
+    def progress_hook(self, d: dict) -> None:
+        if d.get("status") == "finished":
+            self.final_path = d.get("filename")
+
+    def pp_hook(self, d: dict) -> None:
+        if d.get("status") == "finished":
+            fp = d.get("info_dict", {}).get("filepath")
+            if fp:
+                self.final_path = fp
+
+
+def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
     base = {
         "noplaylist": True,
-        "outtmpl": os.path.join(OUTPUT_DIR, "%(title)s.%(ext)s"),
+        "outtmpl": os.path.join(TEMP_DIR, "%(title)s.%(ext)s"),
+        "progress_hooks": [tracker.progress_hook],
+        "postprocessor_hooks": [tracker.pp_hook],
     }
 
     if not HAS_FFMPEG:
@@ -47,7 +77,6 @@ def get_ydl_options(fmt: str) -> dict:
                 f"ffmpeg não encontrado. O formato {fmt.upper()} requer ffmpeg para conversão. "
                 "Instale o ffmpeg ou escolha MP4."
             )
-        # MP4 sem ffmpeg: baixa o melhor stream com áudio integrado
         return {**base, "format": "best[height<=1080]"}
 
     if fmt == "mp3":
@@ -71,7 +100,6 @@ def get_ydl_options(fmt: str) -> dict:
             }],
         }
 
-    # MP4, MKV, AVI, MOV — merge direto no container
     return {
         **base,
         "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
@@ -91,12 +119,16 @@ def download_worker() -> None:
         url = item["url"]
         fmt = item["fmt"]
         log(f"Iniciando download [{fmt.upper()}]: {url}")
+        tracker = DownloadTracker()
         try:
-            with YoutubeDL(get_ydl_options(fmt)) as ydl:
+            with YoutubeDL(get_ydl_options(fmt, tracker)) as ydl:
                 ydl.download([url])
         except Exception as exc:
             log(f"Erro ao baixar {url}: {exc}")
         else:
+            filename = os.path.basename(tracker.final_path) if tracker.final_path else None
+            if filename:
+                add_completed(filename, fmt)
             log(f"Download concluído [{fmt.upper()}]: {url}")
 
 
@@ -115,15 +147,6 @@ def escape_html(text: str) -> str:
                 .replace("'", "&#39;"))
 
 
-def open_output_folder() -> None:
-    if os.name == "nt":
-        os.startfile(OUTPUT_DIR)
-    elif os.name == "posix":
-        subprocess.Popen(["xdg-open", OUTPUT_DIR])
-    else:
-        raise RuntimeError("Não é possível abrir a pasta automaticamente neste sistema.")
-
-
 def build_html() -> str:
     with state_lock:
         queue_items = "".join(
@@ -133,6 +156,7 @@ def build_html() -> str:
         recent_messages = list(messages[-20:])
         running = download_thread is not None
         msg_count = len(messages)
+        init_seq = completed[-1]["seq"] if completed else 0
 
     message_items = "".join(f"<li>{escape_html(msg)}</li>" for msg in recent_messages)
     ffmpeg_warning = "" if HAS_FFMPEG else (
@@ -174,7 +198,7 @@ def build_html() -> str:
 <body>
     <header>
         <h1>Downloader YouTube</h1>
-        <p class="small">Cole uma URL, escolha o formato e ela será adicionada à fila. O download começa automaticamente.</p>
+        <p class="small">Cole uma URL, escolha o formato e ela será enviada diretamente para o seu navegador.</p>
     </header>
     <div class="card">
         {ffmpeg_warning}
@@ -206,12 +230,10 @@ def build_html() -> str:
         <h2>Mensagens recentes</h2>
         <ol id="message-list">{message_items}</ol>
     </div>
-    <div class="card">
-        <p class="small">Os arquivos serão salvos em <strong><a href="/open-folder" target="_self">videos/</a></strong>.</p>
-    </div>
     <div id="toast-container"></div>
     <script>
         let lastMessageCount = {msg_count};
+        let lastCompletedSeq = {init_seq};
 
         function escapeHtml(text) {{
             const div = document.createElement('div');
@@ -230,15 +252,26 @@ def build_html() -> str:
             setTimeout(() => container.removeChild(toast), 5600);
         }}
 
+        function triggerBrowserDownload(filename) {{
+            const a = document.createElement('a');
+            a.href = '/download/' + encodeURIComponent(filename);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => document.body.removeChild(a), 200);
+        }}
+
         function updateStatus(data) {{
             const queueList = document.getElementById('queue-list');
             const messageList = document.getElementById('message-list');
             const statusChip = document.querySelector('.status-chip');
+
             queueList.innerHTML = data.urls.map(item =>
                 `<li><span class="fmt-badge">${{escapeHtml(item.fmt.toUpperCase())}}</span> ${{escapeHtml(item.url)}}</li>`
             ).join('');
             messageList.innerHTML = data.messages.map(msg => `<li>${{escapeHtml(msg)}}</li>`).join('');
             statusChip.textContent = data.running ? 'Em execução' : 'Aguardando novos URLs';
+
             if (data.total_messages > lastMessageCount) {{
                 const newMsgs = data.messages.slice(data.messages.length - (data.total_messages - lastMessageCount));
                 for (const msg of newMsgs) {{
@@ -246,6 +279,15 @@ def build_html() -> str:
                     else if (msg.startsWith('Erro')) createToast(msg, true);
                 }}
                 lastMessageCount = data.total_messages;
+            }}
+
+            if (data.completed) {{
+                for (const item of data.completed) {{
+                    if (item.seq > lastCompletedSeq) {{
+                        lastCompletedSeq = item.seq;
+                        triggerBrowserDownload(item.filename);
+                    }}
+                }}
             }}
         }}
 
@@ -277,6 +319,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
                     "messages": messages[-20:],
                     "total_messages": len(messages),
                     "running": download_thread is not None,
+                    "completed": list(completed),
                 }
             payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
@@ -286,14 +329,37 @@ class SimpleHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
 
-        if self.path == "/open-folder":
+        if self.path.startswith("/download/"):
+            raw = self.path[len("/download/"):]
+            filename = urllib.parse.unquote(raw)
+            filepath = os.path.abspath(os.path.join(TEMP_DIR, filename))
+            if not filepath.startswith(TEMP_DIR_ABS + os.sep):
+                self.send_error(403)
+                return
+            if not os.path.isfile(filepath):
+                self.send_error(404)
+                return
+            encoded_name = urllib.parse.quote(filename)
+            size = os.path.getsize(filepath)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename*=UTF-8''{encoded_name}",
+            )
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
             try:
-                open_output_folder()
-                self.send_response(303)
-                self.send_header("Location", "/")
-                self.end_headers()
-            except Exception as exc:
-                self.send_error(500, str(exc))
+                with open(filepath, "rb") as f:
+                    shutil.copyfileobj(f, self.wfile)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                # Apaga o arquivo após enviar — servidor não acumula arquivos
+                try:
+                    os.unlink(filepath)
+                except OSError:
+                    pass
             return
 
         if self.path != "/":

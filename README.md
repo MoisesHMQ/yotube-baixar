@@ -7,9 +7,8 @@ Projeto simples para baixar vídeos e áudios do YouTube usando `yt-dlp` com uma
 - Roda um servidor web local em `http://localhost:8000`
 - O usuário cola a URL do YouTube e escolhe o formato de saída
 - Cada URL é adicionada a uma fila e o download começa automaticamente em segundo plano
-- Ao concluir, uma notificação toast aparece no navegador
-- Os arquivos são salvos na pasta `videos/`
-- É possível abrir a pasta `videos/` diretamente pelo link na página
+- Ao concluir, o arquivo é enviado **diretamente ao navegador do usuário** (download automático)
+- O servidor não armazena arquivos permanentemente — usa um diretório temporário do sistema operacional que é limpo ao encerrar
 
 ## Formatos suportados
 
@@ -30,7 +29,6 @@ Projeto simples para baixar vídeos e áudios do YouTube usando `yt-dlp` com uma
 - `Dockerfile` — imagem Docker para rodar o projeto
 - `requirements.txt` — dependências Python
 - `.dockerignore` — arquivos ignorados no build Docker
-- `videos/` — pasta de saída onde os downloads são salvos
 
 ## Requisitos
 
@@ -100,5 +98,6 @@ http://localhost:8000
 ## Observações
 
 - Se `ffmpeg` não estiver disponível, apenas o formato MP4 é aceito; os demais são rejeitados com mensagem de erro.
-- A pasta `videos/` é criada automaticamente na primeira execução.
+- O servidor usa um diretório temporário do SO para armazenar os arquivos durante o processamento. Ao encerrar o servidor, todos os arquivos temporários são removidos automaticamente.
+- Após o arquivo ser enviado ao navegador, ele é apagado do servidor imediatamente.
 - O histórico de mensagens é limitado a 500 entradas; a interface exibe as 20 mais recentes.
