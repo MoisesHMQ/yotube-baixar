@@ -405,7 +405,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def run_server() -> None:
-    port = 8000
+    port = int(os.environ.get("PORT", 8000))
     server = ThreadingHTTPServer(("", port), SimpleHandler)
     print(f"Acesse http://localhost:{port} no navegador e cole a URL para adicionar à fila.")
     server.serve_forever()
