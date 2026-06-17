@@ -63,6 +63,9 @@ class DownloadTracker:
                 self.final_path = fp
 
 
+COOKIES_FILE = os.path.join(BASE_DIR, "cookies.txt")
+
+
 def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
     base = {
         "noplaylist": True,
@@ -70,6 +73,9 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
         "progress_hooks": [tracker.progress_hook],
         "postprocessor_hooks": [tracker.pp_hook],
     }
+
+    if os.path.isfile(COOKIES_FILE):
+        base["cookiefile"] = COOKIES_FILE
 
     if not HAS_FFMPEG:
         if fmt != "mp4":
