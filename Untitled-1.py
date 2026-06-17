@@ -127,28 +127,17 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
             }],
         }
 
-    # merge_output_format só suporta mp4/mkv/webm/flv/ogg.
-    # Para avi/mov/wmv usamos mkv como container intermediário e ffmpeg converte no final.
-    merge_fmt = fmt if fmt in ("mp4", "mkv", "webm", "flv") else "mkv"
-
-    video_format = (
-        "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-        "/bestvideo+bestaudio"
-        "/best[ext=mp4]"
-        "/best"
-    )
-    opts = {
+    # bestvideo*+bestaudio/best é o padrão do yt-dlp — cobre DASH e streams combinados.
+    # FFmpegVideoConvertor converte para o formato final; sem merge_output_format
+    # para não restringir os streams disponíveis.
+    return {
         **base,
-        "format": video_format,
-        "merge_output_format": merge_fmt,
-    }
-    # Só adiciona o convertor quando o formato final difere do container de merge
-    if fmt != merge_fmt:
-        opts["postprocessors"] = [{
+        "format": "bestvideo*+bestaudio/best",
+        "postprocessors": [{
             "key": "FFmpegVideoConvertor",
             "preferedformat": fmt,
-        }]
-    return opts
+        }],
+    }
 
 
 def download_worker() -> None:
