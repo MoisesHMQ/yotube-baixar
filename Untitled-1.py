@@ -116,20 +116,23 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
             }],
         }
 
-    if fmt == "wmv":
-        return {
-            **base,
-            "format": "bestvideo*+bestaudio/best",
-            "postprocessors": [{
-                "key": "FFmpegVideoConvertor",
-                "preferedformat": "wmv",
-            }],
-        }
-
+    # Para todos os formatos de vídeo: baixa o melhor disponível (com fallback amplo)
+    # e converte via ffmpeg — evita "Requested format is not available" em streams sem
+    # vídeo/áudio separados.
+    video_format = (
+        "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+        "/bestvideo+bestaudio"
+        "/best[ext=mp4]"
+        "/best"
+    )
     return {
         **base,
-        "format": "bestvideo*+bestaudio/best",
+        "format": video_format,
         "merge_output_format": fmt,
+        "postprocessors": [{
+            "key": "FFmpegVideoConvertor",
+            "preferedformat": fmt,
+        }],
     }
 
 
