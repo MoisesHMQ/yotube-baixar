@@ -116,24 +116,28 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
             }],
         }
 
-    # Para todos os formatos de vídeo: baixa o melhor disponível (com fallback amplo)
-    # e converte via ffmpeg — evita "Requested format is not available" em streams sem
-    # vídeo/áudio separados.
+    # merge_output_format só suporta mp4/mkv/webm/flv/ogg.
+    # Para avi/mov/wmv usamos mkv como container intermediário e ffmpeg converte no final.
+    merge_fmt = fmt if fmt in ("mp4", "mkv", "webm", "flv") else "mkv"
+
     video_format = (
         "bestvideo[ext=mp4]+bestaudio[ext=m4a]"
         "/bestvideo+bestaudio"
         "/best[ext=mp4]"
         "/best"
     )
-    return {
+    opts = {
         **base,
         "format": video_format,
-        "merge_output_format": fmt,
-        "postprocessors": [{
+        "merge_output_format": merge_fmt,
+    }
+    # Só adiciona o convertor quando o formato final difere do container de merge
+    if fmt != merge_fmt:
+        opts["postprocessors"] = [{
             "key": "FFmpegVideoConvertor",
             "preferedformat": fmt,
-        }],
-    }
+        }]
+    return opts
 
 
 def download_worker() -> None:
