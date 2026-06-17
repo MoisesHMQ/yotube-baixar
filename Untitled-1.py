@@ -63,7 +63,10 @@ class DownloadTracker:
                 self.final_path = fp
 
 
-COOKIES_FILE = os.path.join(BASE_DIR, "cookies.txt")
+# cookies_source.txt é montado como read-only pelo Docker
+# O código copia para TEMP_DIR antes de cada download para yt-dlp poder escrever
+COOKIES_SOURCE = os.path.join(BASE_DIR, "cookies_source.txt")
+COOKIES_FILE = os.path.join(TEMP_DIR, "cookies.txt")
 
 
 def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
@@ -86,6 +89,10 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
             )
         },
     }
+
+    # Copia os cookies originais para o temp a cada download (evita sobrescrita pelo yt-dlp)
+    if os.path.isfile(COOKIES_SOURCE):
+        shutil.copy2(COOKIES_SOURCE, COOKIES_FILE)
 
     if os.path.isfile(COOKIES_FILE):
         base["cookiefile"] = COOKIES_FILE
