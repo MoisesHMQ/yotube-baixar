@@ -119,7 +119,7 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
     if fmt == "wmv":
         return {
             **base,
-            "format": "bestvideo+bestaudio/best",
+            "format": "bestvideo*+bestaudio/best",
             "postprocessors": [{
                 "key": "FFmpegVideoConvertor",
                 "preferedformat": "wmv",
@@ -128,7 +128,7 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
 
     return {
         **base,
-        "format": "bestvideo+bestaudio/best",
+        "format": "bestvideo*+bestaudio/best",
         "merge_output_format": fmt,
     }
 
