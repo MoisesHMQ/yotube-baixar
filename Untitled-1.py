@@ -53,12 +53,19 @@ class DownloadTracker:
         self.final_path: str | None = None
 
     def progress_hook(self, d: dict) -> None:
+        # Captura o arquivo baixado; pp_hook sobrescreve após pós-processamento
         if d.get("status") == "finished":
-            self.final_path = d.get("filename")
+            fn = d.get("filename") or d.get("info_dict", {}).get("filename")
+            if fn:
+                self.final_path = fn
 
     def pp_hook(self, d: dict) -> None:
+        # Sempre sobrescreve — o último pós-processador determina o arquivo final
         if d.get("status") == "finished":
-            fp = d.get("info_dict", {}).get("filepath")
+            fp = (
+                d.get("info_dict", {}).get("filepath")
+                or d.get("info_dict", {}).get("filename")
+            )
             if fp:
                 self.final_path = fp
 
@@ -127,12 +134,19 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
             }],
         }
 
-    # bestvideo*+bestaudio/best é o padrão do yt-dlp — cobre DASH e streams combinados.
-    # FFmpegVideoConvertor converte para o formato final; sem merge_output_format
-    # para não restringir os streams disponíveis.
+    # Para mp4/mkv/webm: merge direto no container pedido — sem conversão extra.
+    # Para avi/mov/wmv: merge em mkv (container intermediário seguro) e converte.
+    if fmt in ("mp4", "mkv", "webm"):
+        return {
+            **base,
+            "format": "bestvideo*+bestaudio/best",
+            "merge_output_format": fmt,
+        }
+
     return {
         **base,
         "format": "bestvideo*+bestaudio/best",
+        "merge_output_format": "mkv",
         "postprocessors": [{
             "key": "FFmpegVideoConvertor",
             "preferedformat": fmt,
