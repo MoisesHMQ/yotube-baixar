@@ -69,6 +69,17 @@ COOKIES_SOURCE = os.path.join(BASE_DIR, "cookies_source.txt")
 COOKIES_FILE = os.path.join(TEMP_DIR, "cookies.txt")
 
 
+def clean_youtube_url(url: str) -> str:
+    """Remove parâmetros de playlist/radio do YouTube, mantendo só o ID do vídeo."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc in ("www.youtube.com", "youtube.com", "m.youtube.com"):
+        params = urllib.parse.parse_qs(parsed.query)
+        v = params.get("v", [None])[0]
+        if v:
+            return f"https://www.youtube.com/watch?v={v}"
+    return url
+
+
 def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
     base = {
         "noplaylist": True,
@@ -420,6 +431,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
             if not url.startswith(("http://", "https://")):
                 log(f"URL rejeitada (deve começar com http:// ou https://): {url}")
             else:
+                url = clean_youtube_url(url)
                 with state_lock:
                     urls.append({"url": url, "fmt": fmt})
                     start_download_thread()
