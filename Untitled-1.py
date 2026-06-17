@@ -72,6 +72,19 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
         "outtmpl": os.path.join(TEMP_DIR, "%(title)s.%(ext)s"),
         "progress_hooks": [tracker.progress_hook],
         "postprocessor_hooks": [tracker.pp_hook],
+        # Robustez
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 5,
+        "nocheckcertificate": True,
+        "ignoreerrors": False,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            )
+        },
     }
 
     if os.path.isfile(COOKIES_FILE):
@@ -83,7 +96,7 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
                 f"ffmpeg não encontrado. O formato {fmt.upper()} requer ffmpeg para conversão. "
                 "Instale o ffmpeg ou escolha MP4."
             )
-        return {**base, "format": "best[height<=1080]"}
+        return {**base, "format": "best"}
 
     if fmt == "mp3":
         return {
@@ -99,7 +112,7 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
     if fmt == "wmv":
         return {
             **base,
-            "format": "bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio/best",
+            "format": "bestvideo+bestaudio/best",
             "postprocessors": [{
                 "key": "FFmpegVideoConvertor",
                 "preferedformat": "wmv",
@@ -108,7 +121,7 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
 
     return {
         **base,
-        "format": "bestvideo[height<=1080]+bestaudio/bestvideo+bestaudio/best",
+        "format": "bestvideo+bestaudio/best",
         "merge_output_format": fmt,
     }
 
