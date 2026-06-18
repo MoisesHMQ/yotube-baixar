@@ -134,19 +134,13 @@ def get_ydl_options(fmt: str, tracker: DownloadTracker) -> dict:
             }],
         }
 
-    # Para mp4/mkv/webm: merge direto no container pedido — sem conversão extra.
-    # Para avi/mov/wmv: merge em mkv (container intermediário seguro) e converte.
-    if fmt in ("mp4", "mkv", "webm"):
-        return {
-            **base,
-            "format": "bestvideo*+bestaudio/best",
-            "merge_output_format": fmt,
-        }
-
+    # Sem merge_output_format: evita que o yt-dlp restrinja streams disponíveis
+    # com base no container alvo. O FFmpegVideoConvertor cuida da conversão final.
+    # extractor_args tenta web + android, que expõem formatos distintos no YouTube.
     return {
         **base,
         "format": "bestvideo*+bestaudio/best",
-        "merge_output_format": "mkv",
+        "extractor_args": {"youtube": {"player_client": ["web", "android"]}},
         "postprocessors": [{
             "key": "FFmpegVideoConvertor",
             "preferedformat": fmt,
